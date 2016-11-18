@@ -1,19 +1,34 @@
 #include "globals.h"
+#include <util/atomic.h>
+
+#define WATCHDOG_
+#ifdef WATCHDOG_
+#include <avr/wdt.h>
+#endif
 
 void setup(){
+  speed = 0;
+  controller_output = 0;
+  #ifdef WATCHDOG_
+    wdt_reset();        //Watchdpg Timer Reset
+    wdt_enable(WDTO_250MS);     //Set to expire in 250 MS
+  #endif
+  
   //Load saved tunings from EEPROM, initalize the controller
-  pterm = load_controller_tuning(PTERM);
-  iterm = load_controller_tuning(ITERM);
-  dterm = load_controller_tuning(DTERM);
+  v_pterm = load_controller_tuning(PTERM);
+  v_iterm = load_controller_tuning(ITERM);
+  v_dterm = load_controller_tuning(DTERM);
   controller.SetTunings(pterm,iterm,dterm);
-  controller.SetMode(AUTOMATIC);
+  controller.SetMode(MANUAL);
+  state = STOP;
   controller.SetOutputLimits(-1*PWM_WIDTH,PWM_WIDTH);
-  controller.SetSampleTime(100);
+  controller.SetSampleTime(20);
 
   Serial.begin(9600);
+  Serial.println("RESET");
   //A and B channels of the Quad encoder
-  pinMode(PINA, INPUT);
-  pinMode(PINB, INPUT);
+  pinMode(PIN_A, INPUT);
+  pinMode(PIN_B, INPUT);
   attachInterrupt(0,spin,RISING);
 
   pinMode(VICTOR_PIN, OUTPUT);
@@ -47,46 +62,68 @@ void loop(){
     controller.SetTunings(pterm,iterm,dterm);
     last_tuning_update = millis();
   }
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+    speed = v_speed;
+    pterm = v_pterm;
+    iterm = v_iterm;
+    dterm = v_dterm;
+    ticks = v_ticks;
+    if(state == RUN && controller.GetMode() == MANUAL){
+      controller.SetMode(AUTOMATIC);
+    } else if(state == STOP){
+      controller.SetMode(MANUAL);
+    }
+  }
   if(controller.Compute() || controller.GetMode() == MANUAL){
     if(controller.GetMode() != MANUAL){
-      int output = (int)controller_output + PWM_CENTER;
+      int output = (int)(controller_output) + PWM_CENTER;
       victor.writeMicroseconds(output);
-    } else {
+     } else {
       //The controller is only in MANUAL when it has been estopped
       //Therefore, write the Victor's zero value
       victor.writeMicroseconds(PWM_CENTER);
     }
-    printDebug();
+     ATOMIC_BLOCK(ATOMIC_RESTORESTATE)
+  {
+      v_ticks = 0;
+  }
+    if(pc == 0)
+      printDebug();
+    pc+=4;
     last_ticks = ticks;
-    ticks = 0;
+   
+  
   }
 }
 
-
+//Interupt handler volatile vars only!
 void receive(int incoming){
+  #ifdef WATCHDOG_
+    wdt_reset();        //Watchdog Timer Reset
+  #endif
+  
   switch((enum command)Wire.read()){
   case SPEED:
-    if(controller.GetMode() == MANUAL){
-      controller.SetMode(AUTOMATIC);
-    }
-    setParam(incoming, &speed);
+    state = RUN;
+    setParam(incoming, &v_speed);
     break;
   case PTERM:
-    setParam(incoming, &pterm);
-    save_controller_tuning(PTERM,pterm);
+    setParam(incoming, &v_pterm);
+    save_controller_tuning(PTERM,v_pterm);
     break;
   case ITERM:
-    setParam(incoming, &iterm);
-    save_controller_tuning(ITERM,iterm);
+    setParam(incoming, &v_iterm);
+    save_controller_tuning(ITERM,v_iterm);
     break;
   case DTERM:
-    setParam(incoming, &dterm);
-    save_controller_tuning(DTERM,dterm);
+    setParam(incoming, &v_dterm);
+    save_controller_tuning(DTERM,v_dterm);
     break;
   case ESTOP:
-    controller.SetMode(MANUAL);
-    speed = 0;
-    controller_output = 0;
+    state = STOP;
+    v_speed = 0;
+   // controller_output = 0;
   }
 }
 
@@ -96,7 +133,7 @@ void writeTicks(){
 
 void printDebug(){
     //All serial printing is for debugging only.
-    //Control information happens over i2c
+    //Control information 
     Serial.print("Speed: ");
     Serial.print(speed);
     Serial.print(" ticks: ");
@@ -109,7 +146,7 @@ void printDebug(){
     Serial.print(dterm);
     Serial.print(" OUTPUT: ");
     Serial.println(controller_output);
-    if(controller.GetMode() == MANUAL){
+    if(controller.GetMode() == MANUAL && state == STOP){
       Serial.println("****ESTOP****");
     }
 }
@@ -131,10 +168,10 @@ void setParam(int incoming, volatile double * dest){
 }
 
 void spin(){
-  if(digitalRead(PINA) == HIGH && digitalRead(PINB) == LOW){
-    ticks++;
+  if(digitalRead(PIN_A) == HIGH && digitalRead(PIN_B) == LOW){
+    v_ticks++;
   } else {
-    ticks--;
+    v_ticks--;
   }
 }
 double load_controller_tuning(int tuning){
@@ -146,7 +183,7 @@ double load_controller_tuning(int tuning){
   }
   return out;
 }
-void save_controller_tuning(int tuning, double value){
+void save_controller_tuning(int tuning, volatile double value){
   byte * disassembled = (byte *)&value;
   for(int i = 0; i < sizeof(double); ++i){
     EEPROM.write(sizeof(double)*tuning + i, *disassembled);
