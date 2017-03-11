@@ -47,7 +47,7 @@ volatile state_t state;
 #define PWM_CENTER 1510
 #define PWM_WIDTH  635
 int current_speed = 0;
-double controller_output = PWM_CENTER;
+double controller_output = 0;
 PID controller(&ticks, &controller_output, &speed,
 	       pterm,iterm,dterm, DIRECT);
 long last_tuning_update = 0;
