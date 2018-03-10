@@ -70,6 +70,9 @@ void loop(){
     dterm = v_dterm;
     ticks = v_ticks;
     if(state == RUN && controller.GetMode() == MANUAL){
+      ticks = 0;
+      v_ticks = 0;
+      last_ticks = 0;
       controller.SetMode(AUTOMATIC);
     } else if(state == STOP){
       controller.SetMode(MANUAL);
